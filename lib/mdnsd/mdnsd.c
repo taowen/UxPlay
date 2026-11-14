@@ -411,6 +411,25 @@ static uint32_t mdns_get_default_ipv4(void)
     }
 
     CLOSESOCKET(fd);
+
+    /* A hotspot may have a usable LAN interface without a default multicast
+     * route. Select an active multicast interface explicitly in that case. */
+    if (!addr) {
+        struct ifaddrs *interfaces = NULL;
+        if (getifaddrs(&interfaces) == 0) {
+            for (struct ifaddrs *ifa = interfaces; ifa; ifa = ifa->ifa_next) {
+                if (!ifa->ifa_addr || ifa->ifa_addr->sa_family != AF_INET ||
+                    !(ifa->ifa_flags & IFF_UP) || !(ifa->ifa_flags & IFF_MULTICAST) ||
+                    (ifa->ifa_flags & IFF_LOOPBACK)) continue;
+                uint32_t candidate = ((struct sockaddr_in *)ifa->ifa_addr)->sin_addr.s_addr;
+                if (candidate && (ntohl(candidate) >> 24) != 127) {
+                    addr = candidate;
+                    break;
+                }
+            }
+            freeifaddrs(interfaces);
+        }
+    }
 #endif
     //printf("local ipv4 address %d.%d.%d.%d\n",  (addr & 0xff), ((addr >> 8) & 0xff),
     //       ((addr >> 16) & 0xff),((addr >> 24) & 0xff));
