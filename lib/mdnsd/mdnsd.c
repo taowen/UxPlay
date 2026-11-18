@@ -345,9 +345,40 @@ static int mdns_query_type_matches(uint16_t query_type, uint16_t record_type)
     return query_type == record_type || query_type == DNS_TYPE_ANY;
 }
 
+#ifndef _WIN32
+static uint32_t mdns_find_multicast_ipv4(const char *interface_prefix)
+{
+    uint32_t addr = 0;
+    struct ifaddrs *interfaces = NULL;
+    if (getifaddrs(&interfaces) != 0) return 0;
+
+    for (struct ifaddrs *ifa = interfaces; ifa; ifa = ifa->ifa_next) {
+        if (!ifa->ifa_addr || ifa->ifa_addr->sa_family != AF_INET ||
+            !(ifa->ifa_flags & IFF_UP) || !(ifa->ifa_flags & IFF_MULTICAST) ||
+            (ifa->ifa_flags & IFF_LOOPBACK)) continue;
+        if (interface_prefix && (!ifa->ifa_name ||
+            strncmp(ifa->ifa_name, interface_prefix, strlen(interface_prefix)) != 0)) continue;
+
+        uint32_t candidate = ((struct sockaddr_in *)ifa->ifa_addr)->sin_addr.s_addr;
+        if (candidate && (ntohl(candidate) >> 24) != 127) {
+            addr = candidate;
+            break;
+        }
+    }
+    freeifaddrs(interfaces);
+    return addr;
+}
+#endif
+
 static uint32_t mdns_get_default_ipv4(void)
 {
     uint32_t addr = 0;
+#ifdef __ANDROID__
+    /* A bridged Soft AP can coexist with upstream Wi-Fi. Android routes
+     * multicast upstream, while casting clients are on the AP bridge. */
+    addr = mdns_find_multicast_ipv4("ap_br_");
+    if (addr) return addr;
+#endif
 #ifdef _WIN32
     ULONG buflen = 15000;
     PIP_ADAPTER_ADDRESSES pAddresses = NULL;
@@ -414,26 +445,9 @@ static uint32_t mdns_get_default_ipv4(void)
 
     /* A hotspot may have a usable LAN interface without a default multicast
      * route. Select an active multicast interface explicitly in that case. */
-    if (!addr) {
-        struct ifaddrs *interfaces = NULL;
-        if (getifaddrs(&interfaces) == 0) {
-            for (struct ifaddrs *ifa = interfaces; ifa; ifa = ifa->ifa_next) {
-                if (!ifa->ifa_addr || ifa->ifa_addr->sa_family != AF_INET ||
-                    !(ifa->ifa_flags & IFF_UP) || !(ifa->ifa_flags & IFF_MULTICAST) ||
-                    (ifa->ifa_flags & IFF_LOOPBACK)) continue;
-                uint32_t candidate = ((struct sockaddr_in *)ifa->ifa_addr)->sin_addr.s_addr;
-                if (candidate && (ntohl(candidate) >> 24) != 127) {
-                    addr = candidate;
-                    break;
-                }
-            }
-            freeifaddrs(interfaces);
-        }
-    }
+    if (!addr) addr = mdns_find_multicast_ipv4(NULL);
 #endif
-    //printf("local ipv4 address %d.%d.%d.%d\n",  (addr & 0xff), ((addr >> 8) & 0xff),
-    //       ((addr >> 16) & 0xff),((addr >> 24) & 0xff));
-    
+
     return addr;
 }
 
