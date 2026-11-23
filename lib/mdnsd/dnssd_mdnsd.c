@@ -59,15 +59,19 @@ static void dnssd_sanitize_label(char *label)
     }
 }
 
-static void dnssd_make_host_name(char *dst, size_t dst_len)
+static void dnssd_make_host_name(char *dst, size_t dst_len, const char *hwaddr)
 {
     char host[128];
 
-    if (gethostname(host, sizeof(host)) || !host[0]) {
-        snprintf(host, sizeof(host), "UxPlay");
+    if (gethostname(host, sizeof(host))) {
+        host[0] = '\0';
     }
     host[sizeof(host) - 1] = '\0';
     dnssd_sanitize_label(host);
+    /* "localhost" is reserved and cannot serve as the receiver's mDNS target. */
+    if (!host[0] || !strcmp(host, "localhost")) {
+        snprintf(host, sizeof(host), "UxPlay-%s", hwaddr);
+    }
     snprintf(dst, dst_len, "%s.local", host);
 }
 
@@ -89,7 +93,7 @@ static int dnssd_prepare_names(dnssd_private_t *dnssd, dnssd_t *dnssd_public)
         return -1;
     }
 
-    dnssd_make_host_name(dnssd->host_name, sizeof(dnssd->host_name));
+    dnssd_make_host_name(dnssd->host_name, sizeof(dnssd->host_name), hwaddr);
     return 0;
 }
 
