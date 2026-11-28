@@ -64,7 +64,6 @@ struct raop_ntp_s {
     raop_callbacks_t callbacks;
     thread_handle_t thread;
     mutex_handle_t run_mutex;
-    mutex_handle_t wait_mutex;
     cond_handle_t wait_cond;
 
     raop_ntp_data_t data[RAOP_NTP_DATA_COUNT];
@@ -480,7 +479,6 @@ raop_ntp_t *raop_ntp_init(logger_t *logger, raop_callbacks_t *callbacks, const c
     raop_ntp->sync_offset = 0;
 
     MUTEX_CREATE(raop_ntp->run_mutex);
-    MUTEX_CREATE(raop_ntp->wait_mutex);
     COND_CREATE(raop_ntp->wait_cond);
     MUTEX_CREATE(raop_ntp->sync_params_mutex);
     return raop_ntp;
@@ -492,7 +490,6 @@ raop_ntp_destroy(raop_ntp_t *raop_ntp)
     if (raop_ntp) {
         raop_ntp_stop(raop_ntp);
         MUTEX_DESTROY(raop_ntp->run_mutex);
-        MUTEX_DESTROY(raop_ntp->wait_mutex);
         COND_DESTROY(raop_ntp->wait_cond);
         MUTEX_DESTROY(raop_ntp->sync_params_mutex);
         free(raop_ntp);
@@ -838,7 +835,12 @@ raop_ntp_thread(void *arg) {
         }
 
         struct timespec wait_time;
-        MUTEX_LOCK(raop_ntp->wait_mutex);
+        /* Stop may have signalled while the timing request was in flight. */
+        MUTEX_LOCK(raop_ntp->run_mutex);
+        if (!raop_ntp->running) {
+            MUTEX_UNLOCK(raop_ntp->run_mutex);
+            break;
+        }
         clock_gettime(CLOCK_REALTIME, &wait_time);
         if (ntpcount > (int) NTP_BURST_LIMIT) {
             wait_time.tv_sec += 3;               // Sleep for 3 seconds
@@ -849,8 +851,8 @@ raop_ntp_thread(void *arg) {
                 wait_time.tv_nsec -= 1000000000LL;
             }
         }
-        pthread_cond_timedwait(&raop_ntp->wait_cond, &raop_ntp->wait_mutex, &wait_time);
-        MUTEX_UNLOCK(raop_ntp->wait_mutex);
+        pthread_cond_timedwait(&raop_ntp->wait_cond, &raop_ntp->run_mutex, &wait_time);
+        MUTEX_UNLOCK(raop_ntp->run_mutex);
         ntpcount = ntpcount > NTP_BURST_LIMIT ? NTP_BURST_LIMIT : ntpcount;
     }
 
@@ -913,13 +915,10 @@ raop_ntp_stop(raop_ntp_t *raop_ntp)
         return;
     }
     raop_ntp->running = 0;
+    COND_SIGNAL(raop_ntp->wait_cond);
     MUTEX_UNLOCK(raop_ntp->run_mutex);
 
     logger_log(raop_ntp->logger, LOGGER_DEBUG, "raop_ntp stopping time thread");
-
-    MUTEX_LOCK(raop_ntp->wait_mutex);
-    COND_SIGNAL(raop_ntp->wait_cond);
-    MUTEX_UNLOCK(raop_ntp->wait_mutex);
 
     THREAD_JOIN(raop_ntp->thread);
 
